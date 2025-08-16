@@ -1,0 +1,130 @@
+# Científico: Pipeline AlphaFold
+# Demonstra pipeline científico com export PDB e relatório técnico
+
+metadata:
+  name: "Pipeline AlphaFold"
+  description: "Predição de estrutura proteica com análise completa"
+  category: "cientifico"
+  estimated_cost: 2.50
+  estimated_time: 300
+  risk_level: "medium"
+  compute_intensive: true
+
+plan:
+  - span:
+      type: exec
+      tool: bio.sequence_validate
+      args:
+        sequence: "MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRFKDLGEENFKALVLIAFAQYLQQCPFEDHVKLVNEVTEFAKTCVADESAENCDKSLHTLFGDKLCTVATLRETYGEMADCCAKQEPERNECFLQHKDDNPNLPRLVRPEVDVMCTAFHDNEETFLKKYLYEIARRHPYFYAPELLFFAKRYKAAFTECCQAADKAACLLPKLDELRDEGKASSAKQRLKCASLQKFGERAFKAWAVARLSQRFPKAEFAEVSKLVTDLTKVHTECCHGDLLECADDRADLAKYICENQDSISSKLKECCEKPLLEKSHCIAEVENDEMPADLPSLAADFVESKDVCKNYAEAKDVFLGMFLYEYARRHPDYSVVLLLRLAKTYETTLEKCCAAADPHECYAKVFDEFKPLVEEPQNLIKQNCELFEQLGEYKFQNALLVRYTKKVPQVSTPTLVEVSRNLGKVGSKCCKHPEAKRMPCAEDYLSVVLNQLCVLHEKTPVSDRVTKCCTESLVNRRPCFSALEVDETYVPKEFNAETFTFHADICTLSEKERQIKKQTALVELVKHKPKATKEQLKAVMDDFAAFVEKCCKADDKETCFAEEGKKLVAASQAALGL"
+        organism: "homo_sapiens"
+      meta:
+        description: "Validar sequência de aminoácidos"
+        cost: 0.01
+
+  - span:
+      type: exec
+      tool: alphafold.predict
+      args:
+        sequence: 'ref("bio.sequence_validate.sequence")'
+        model_version: "v2.3"
+        confidence_threshold: 0.7
+        max_iterations: 1000
+        output_formats: ["pdb", "cif", "json"]
+      meta:
+        description: "Executar predição AlphaFold"
+        cost: 2.00
+
+  - span:
+      type: exec
+      tool: bio.structure_analyze
+      args:
+        structure: 'ref("alphafold.predict.pdb")'
+        analyses:
+          - "secondary_structure"
+          - "binding_sites"
+          - "stability_regions"
+          - "disorder_prediction"
+        reference_db: "pdb_database"
+      meta:
+        description: "Análise estrutural detalhada"
+        cost: 0.30
+
+  - span:
+      type: exec
+      tool: bio.homology_search
+      args:
+        structure: 'ref("alphafold.predict.pdb")'
+        databases: ["pdb", "alphafold_db", "swiss_model"]
+        similarity_threshold: 0.8
+        max_results: 20
+      meta:
+        description: "Busca por estruturas homólogas"
+        cost: 0.10
+
+  - span:
+      type: exec
+      tool: report.scientific
+      args:
+        template: "protein_structure_analysis"
+        data:
+          sequence_info: 'ref("bio.sequence_validate")'
+          prediction_results: 'ref("alphafold.predict")'
+          structural_analysis: 'ref("bio.structure_analyze")'
+          homology_results: 'ref("bio.homology_search")'
+        sections:
+          - "executive_summary"
+          - "methodology"
+          - "results"
+          - "structural_features"
+          - "homology_analysis"
+          - "conclusions"
+          - "references"
+        format: "latex_pdf"
+        include_figures: true
+      meta:
+        description: "Gerar relatório científico completo"
+        cost: 0.05
+
+  - span:
+      type: exec
+      tool: file.export
+      args:
+        files:
+          - path: 'ref("alphafold.predict.pdb_file")'
+            name: "predicted_structure.pdb"
+            type: "pdb"
+          - path: 'ref("alphafold.predict.cif_file")'
+            name: "predicted_structure.cif"
+            type: "cif"
+          - path: 'ref("report.scientific.pdf")'
+            name: "analysis_report.pdf"
+            type: "pdf"
+        destination: "results/"
+        compression: "zip"
+        metadata:
+          experiment_id: 'uuid()'
+          timestamp: 'now()'
+          version: "1.0"
+      meta:
+        description: "Exportar arquivos PDB e relatório"
+        cost: 0.04
+
+contract:
+  benefits:
+    - "Predição estrutural de alta qualidade"
+    - "Análise científica completa automatizada"
+    - "Relatório técnico profissional"
+    - "Arquivos PDB/CIF para uso posterior"
+    - "Economia de semanas de trabalho manual"
+  costs:
+    - "Processamento computacional intensivo: $2.50"
+    - "Tempo: ~5 minutos"
+  risks:
+    - "Predições podem ter baixa confiança em algumas regiões"
+    - "Uso intensivo de recursos computacionais"
+    - "Dependência de bases de dados externas"
+  approval_required: false
+  compute_requirements:
+    - "GPU recomendada para predição"
+    - "Mínimo 8GB RAM"
+    - "Conexão estável com internet"

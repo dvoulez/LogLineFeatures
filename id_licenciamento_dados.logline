@@ -1,0 +1,75 @@
+# Exemplo ID - Licenciamento de Dados com LogLine ID
+# Cenário: Gestão de licenças de dados pessoais com alertas de expiração
+
+- span:
+    type: approval.identity
+    tool: identity.create
+    args:
+      user_id: "user_12345"
+      public_key: "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA..."
+      claims:
+        name: "João Silva"
+        email: "joao@example.com"
+        role: "data_processor"
+        organization: "TechCorp"
+
+- span:
+    type: approval.license
+    tool: identity.license_data
+    args:
+      identity_id: "{{identity.create.id}}"
+      data_type: "personal_information"
+      purpose: "marketing_analysis"
+      duration_days: 30
+      scope:
+        - "email_addresses"
+        - "demographic_data"
+        - "behavioral_patterns"
+      restrictions:
+        - "no_third_party_sharing"
+        - "anonymization_required"
+        - "eu_gdpr_compliant"
+
+- span:
+    type: observe.evidence
+    tool: observe.evidence
+    args:
+      source: "data_license"
+      type: "compliance_record"
+      data:
+        license_id: "{{identity.license_data.license_id}}"
+        granted_at: "{{now}}"
+        expires_at: "{{now + 30 days}}"
+        data_hash: "{{sha256(data_scope)}}"
+
+- span:
+    type: exec.computer
+    tool: computer.execute
+    args:
+      task: "Configurar alerta de expiração"
+      schedule: "{{expires_at - 7 days}}"
+      notification:
+        type: "email"
+        recipient: "{{identity.claims.email}}"
+        message: "Sua licença de dados expira em 7 dias"
+
+- span:
+    type: observe.query
+    tool: identity.export_vc
+    args:
+      identity_id: "{{identity.create.id}}"
+      format: "w3c_verifiable_credential"
+      include_license: true
+      proof_type: "JsonWebSignature2020"
+
+- span:
+    type: observe.recommendation
+    tool: observe.recommendation
+    args:
+      priority: "medium"
+      actions:
+        - "Renovar licença antes da expiração"
+        - "Revisar escopo de dados necessários"
+        - "Implementar anonimização automática"
+      compliance_impact: "high"
+      privacy_risk: "medium"

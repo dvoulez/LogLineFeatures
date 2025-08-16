@@ -1,0 +1,6 @@
+# LogLine Plan: Resumo de Página
+# Fetch webpage and generate summary with citations
+
+web.fetch(url="https://example.com")
+web.summarize(content=@prev.body, url="https://example.com")
+ui.card(title="Page Summary", content=@prev.summary, citations=@prev.citations)

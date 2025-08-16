@@ -1,0 +1,405 @@
+#!/bin/bash
+# LogLineBrowser Ops CLI - Real implementation with HTTP API calls
+
+set -e
+
+RUNTIME_URL="${LOGLINE_RUNTIME_URL:-http://localhost:4123}"
+SCRIPT_DIR="$(dirname "$0")"
+
+# <CHANGE> Added comprehensive ops CLI implementation with HTTP API calls
+usage() {
+    echo "Usage: $0 <command> [args...]"
+    echo ""
+    echo "Commands:"
+    echo "  ask \"<question>\"           Ask a diagnostic question"
+    echo "  trace \"<key>\"              Trace events by key/pattern"
+    echo "  status                      Show system status"
+    echo "  timeline [filters]          Show recent timeline events"
+    echo "  evidence <run_id>           Show evidence for a run"
+    echo "  recommend <context>         Get operational recommendations"
+    echo ""
+    echo "Environment:"
+    echo "  LOGLINE_RUNTIME_URL         Runtime API URL (default: http://localhost:4123)"
+    echo ""
+    echo "Examples:"
+    echo "  $0 ask \"why did p95 latency spike at 2pm?\""
+    echo "  $0 trace \"error\""
+    echo "  $0 status"
+}
+
+check_runtime() {
+    if ! curl -s "$RUNTIME_URL/health" > /dev/null 2>&1; then
+        echo "Error: LogLineBrowser runtime not available at $RUNTIME_URL"
+        echo "Make sure the runtime is running: cd runtime && cargo run"
+        exit 1
+    fi
+}
+
+ask_command() {
+    local question="$1"
+    if [[ -z "$question" ]]; then
+        echo "Error: No question specified"
+        usage
+        exit 1
+    fi
+    
+    check_runtime
+    
+    echo "Analyzing question: $question"
+    echo "Generating diagnostic plan..."
+    
+    # Generate observe.* plan based on question
+    local plan_json
+    plan_json=$(python3 -c "
+import json
+question = '''$question'''
+plan = []
+
+# Generate observe spans based on question keywords
+if 'p95' in question.lower() or 'latency' in question.lower():
+    plan.append({'tool': 'observe.metrics', 'args': {'metric': 'response_time_p95', 'timerange': '1h'}})
+    plan.append({'tool': 'observe.evidence', 'args': {'type': 'performance', 'context': question}})
+
+if 'error' in question.lower() or 'fail' in question.lower():
+    plan.append({'tool': 'observe.logs', 'args': {'level': 'error', 'timerange': '1h'}})
+    plan.append({'tool': 'observe.evidence', 'args': {'type': 'errors', 'context': question}})
+
+if 'spike' in question.lower() or 'increase' in question.lower():
+    plan.append({'tool': 'observe.query', 'args': {'query': 'anomaly detection', 'timerange': '6h'}})
+
+# Always add hypothesis and recommendation
+plan.append({'tool': 'observe.hypothesis', 'args': {'question': question}})
+plan.append({'tool': 'observe.recommendation', 'args': {'context': question}})
+
+print(json.dumps(plan))
+")
+    
+    # Create and execute diagnostic run
+    local response
+    response=$(curl -s -X POST "$RUNTIME_URL/runs" \
+        -H "Content-Type: application/json" \
+        -d "{\"plan\": $plan_json, \"mode\": \"execute\"}")
+    
+    if [[ $? -eq 0 ]]; then
+        local run_id
+        run_id=$(echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('id', ''))
+except:
+    print('')
+")
+        
+        if [[ -n "$run_id" ]]; then
+            echo "Diagnostic run created: $run_id"
+            echo "Collecting evidence..."
+            
+            # Poll for completion
+            for i in {1..20}; do
+                sleep 2
+                local status_response
+                status_response=$(curl -s "$RUNTIME_URL/runs/$run_id")
+                local status
+                status=$(echo "$status_response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('status', ''))
+except:
+    print('')
+")
+                
+                if [[ "$status" == "completed" || "$status" == "failed" ]]; then
+                    echo "Analysis complete. Results:"
+                    evidence_command "$run_id"
+                    break
+                elif [[ "$status" == "running" ]]; then
+                    echo "  Analyzing..."
+                fi
+            done
+        else
+            echo "Error: No run ID returned"
+        fi
+    else
+        echo "Error: Failed to create diagnostic run"
+        exit 1
+    fi
+}
+
+trace_command() {
+    local key="$1"
+    if [[ -z "$key" ]]; then
+        echo "Error: No trace key specified"
+        usage
+        exit 1
+    fi
+    
+    check_runtime
+    
+    echo "Tracing events matching: $key"
+    
+    local response
+    response=$(curl -s "$RUNTIME_URL/timeline?limit=50")
+    
+    if [[ $? -eq 0 ]]; then
+        echo "$response" | python3 -c "
+import sys, json
+key = '''$key'''.lower()
+try:
+    data = json.load(sys.stdin)
+    events = data.get('events', [])
+    runs = data.get('runs', [])
+    
+    print('Matching Events:')
+    found = False
+    for event in events:
+        message = event.get('message', '').lower()
+        event_type = event.get('type', '').lower()
+        source = event.get('source', '').lower()
+        
+        if key in message or key in event_type or key in source:
+            found = True
+            print(f\"  {event.get('timestamp', 'N/A')} - {event.get('severity', 'N/A')} - {event.get('message', 'N/A')}\")
+            if event.get('runId'):
+                print(f\"    Run: {event['runId']}\")
+    
+    if not found:
+        print('  No matching events found')
+    
+    print()
+    print('Matching Runs:')
+    found = False
+    for run in runs:
+        run_id = run.get('id', '').lower()
+        status = run.get('status', '').lower()
+        
+        if key in run_id or key in status:
+            found = True
+            print(f\"  {run.get('id', 'N/A')[:8]} - {run.get('status', 'N/A')} - {run.get('created', 'N/A')}\")
+    
+    if not found:
+        print('  No matching runs found')
+        
+except Exception as e:
+    print(f'Error parsing response: {e}')
+"
+    else
+        echo "Error: Failed to get timeline"
+        exit 1
+    fi
+}
+
+status_command() {
+    check_runtime
+    
+    echo "System Status:"
+    
+    local health_response
+    health_response=$(curl -s "$RUNTIME_URL/health")
+    
+    if [[ $? -eq 0 ]]; then
+        echo "$health_response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(f\"Status: {data.get('status', 'N/A')}\")
+    print(f\"Version: {data.get('version', 'N/A')}\")
+    print(f\"Uptime: {data.get('uptime', 'N/A')}s\")
+    
+    checks = data.get('checks', [])
+    if checks:
+        print()
+        print('Health Checks:')
+        for check in checks:
+            status = check.get('status', 'N/A')
+            name = check.get('name', 'N/A')
+            message = check.get('message', '')
+            print(f\"  {name}: {status} {message}\")
+except:
+    print('Connected but unable to parse health data')
+"
+    else
+        echo "Error: Failed to get system status"
+        exit 1
+    fi
+    
+    # Show recent activity
+    echo ""
+    echo "Recent Activity:"
+    local timeline_response
+    timeline_response=$(curl -s "$RUNTIME_URL/timeline?limit=5")
+    
+    if [[ $? -eq 0 ]]; then
+        echo "$timeline_response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    events = data.get('events', [])
+    if events:
+        for event in events[:5]:
+            print(f\"  {event.get('timestamp', 'N/A')} - {event.get('message', 'N/A')}\")
+    else:
+        print('  No recent events')
+except:
+    print('  Unable to fetch recent events')
+"
+    fi
+}
+
+timeline_command() {
+    check_runtime
+    
+    echo "Recent Timeline Events:"
+    
+    local response
+    response=$(curl -s "$RUNTIME_URL/timeline?limit=20")
+    
+    if [[ $? -eq 0 ]]; then
+        echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    events = data.get('events', [])
+    if not events:
+        print('No events found')
+    else:
+        for event in events:
+            severity = event.get('severity', 'info')
+            timestamp = event.get('timestamp', 'N/A')
+            message = event.get('message', 'N/A')
+            source = event.get('source', 'N/A')
+            print(f\"[{severity.upper()}] {timestamp} - {source}: {message}\")
+except:
+    print('Error parsing timeline response')
+"
+    else
+        echo "Error: Failed to get timeline"
+        exit 1
+    fi
+}
+
+evidence_command() {
+    local run_id="$1"
+    if [[ -z "$run_id" ]]; then
+        echo "Error: No run ID specified"
+        usage
+        exit 1
+    fi
+    
+    check_runtime
+    
+    echo "Evidence for run $run_id:"
+    
+    local response
+    response=$(curl -s "$RUNTIME_URL/runs/$run_id")
+    
+    if [[ $? -eq 0 ]]; then
+        echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    spans = data.get('spans', [])
+    
+    for span in spans:
+        tool = span.get('tool', 'N/A')
+        status = span.get('status', 'N/A')
+        out = span.get('out', {})
+        
+        print(f\"Tool: {tool} ({status})\")
+        if out:
+            if isinstance(out, dict):
+                for key, value in out.items():
+                    print(f\"  {key}: {value}\")
+            else:
+                print(f\"  Result: {out}\")
+        print()
+except Exception as e:
+    print(f'Error parsing response: {e}')
+"
+    else
+        echo "Error: Failed to get run details"
+        exit 1
+    fi
+}
+
+recommend_command() {
+    local context="$1"
+    if [[ -z "$context" ]]; then
+        echo "Error: No context specified"
+        usage
+        exit 1
+    fi
+    
+    check_runtime
+    
+    echo "Generating recommendations for: $context"
+    
+    # Create recommendation plan
+    local plan_json
+    plan_json=$(python3 -c "
+import json
+context = '''$context'''
+plan = [
+    {'tool': 'observe.recommendation', 'args': {'context': context, 'type': 'operational'}},
+    {'tool': 'observe.evidence', 'args': {'type': 'recommendations', 'context': context}}
+]
+print(json.dumps(plan))
+")
+    
+    local response
+    response=$(curl -s -X POST "$RUNTIME_URL/runs" \
+        -H "Content-Type: application/json" \
+        -d "{\"plan\": $plan_json, \"mode\": \"execute\"}")
+    
+    if [[ $? -eq 0 ]]; then
+        local run_id
+        run_id=$(echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('id', ''))
+except:
+    print('')
+")
+        
+        if [[ -n "$run_id" ]]; then
+            echo "Generating recommendations..."
+            sleep 3
+            evidence_command "$run_id"
+        fi
+    else
+        echo "Error: Failed to generate recommendations"
+        exit 1
+    fi
+}
+
+# Main command dispatch
+case "${1:-}" in
+    ask)
+        ask_command "$2"
+        ;;
+    trace)
+        trace_command "$2"
+        ;;
+    status)
+        status_command
+        ;;
+    timeline)
+        timeline_command
+        ;;
+    evidence)
+        evidence_command "$2"
+        ;;
+    recommend)
+        recommend_command "$2"
+        ;;
+    ""|help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Error: Unknown command '$1'"
+        usage
+        exit 1
+        ;;
+esac

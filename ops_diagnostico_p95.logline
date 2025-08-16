@@ -1,0 +1,63 @@
+# Exemplo para Ops - Diagnóstico P95 com Evidências
+# Cenário: Investigação de aumento de latência no serviço de pagamentos
+
+- span:
+    type: observe.query
+    tool: metrics.query
+    args:
+      metric: "response_time_p95"
+      service: "payments"
+      timeframe: "2h"
+      threshold: 200
+
+- span:
+    type: observe.query
+    tool: logs.query
+    args:
+      query: "ERROR timeout"
+      service: "payments"
+      since: "2h"
+      level: "ERROR"
+
+- span:
+    type: observe.evidence
+    tool: observe.evidence
+    args:
+      source: "metrics"
+      type: "performance_degradation"
+      data:
+        current_p95: "{{metrics.query.aggregations.p95}}"
+        baseline_p95: 150
+        degradation_percent: "{{(current_p95 - baseline_p95) / baseline_p95 * 100}}"
+
+- span:
+    type: observe.evidence
+    tool: git.log
+    args:
+      since: "2h"
+      path: "src/payments/"
+      format: "oneline"
+
+- span:
+    type: observe.hypothesis
+    tool: observe.hypothesis
+    args:
+      statement: "Deploy recente causou degradação de performance no serviço de pagamentos"
+      support:
+        - "ref(metrics.query)"
+        - "ref(logs.query)"
+        - "ref(git.log)"
+      confidence: 0.85
+
+- span:
+    type: observe.recommendation
+    tool: observe.recommendation
+    args:
+      priority: "high"
+      actions:
+        - "Rollback do último deploy"
+        - "Aumentar timeout de conexão"
+        - "Escalar horizontalmente o serviço"
+      impact: "high"
+      effort: "medium"
+      timeline: "immediate"

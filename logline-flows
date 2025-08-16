@@ -1,0 +1,325 @@
+#!/bin/bash
+# LogLineBrowser Flows CLI - Real implementation with HTTP API calls
+
+set -e
+
+RUNTIME_URL="${LOGLINE_RUNTIME_URL:-http://localhost:4123}"
+SCRIPT_DIR="$(dirname "$0")"
+EXAMPLES_DIR="$SCRIPT_DIR/../examples"
+
+# <CHANGE> Added comprehensive CLI implementation with HTTP API calls
+usage() {
+    echo "Usage: $0 <command> [args...]"
+    echo ""
+    echo "Commands:"
+    echo "  simulate <file.logline>     Preview contract and simulate execution"
+    echo "  approve <contract_id>       Approve a contract for execution"
+    echo "  run <file.logline>          Execute a .logline file"
+    echo "  trace <run_id>              Show execution trace for a run"
+    echo "  list                        List recent runs"
+    echo ""
+    echo "Environment:"
+    echo "  LOGLINE_RUNTIME_URL         Runtime API URL (default: http://localhost:4123)"
+    echo ""
+    echo "Examples:"
+    echo "  $0 simulate examples/resumo_pagina.logline"
+    echo "  $0 run examples/checkout_seguro.logline"
+    echo "  $0 trace abc123def"
+}
+
+check_runtime() {
+    if ! curl -s "$RUNTIME_URL/health" > /dev/null 2>&1; then
+        echo "Error: LogLineBrowser runtime not available at $RUNTIME_URL"
+        echo "Make sure the runtime is running: cd runtime && cargo run"
+        exit 1
+    fi
+}
+
+parse_logline() {
+    local file="$1"
+    if [[ ! -f "$file" ]]; then
+        echo "Error: File not found: $file"
+        exit 1
+    fi
+    
+    # Extract YAML plan from .logline file
+    if grep -q "^plan:" "$file"; then
+        sed -n '/^plan:/,/^[^[:space:]]/p' "$file" | head -n -1
+    else
+        echo "Error: No plan found in $file"
+        exit 1
+    fi
+}
+
+simulate_command() {
+    local file="$1"
+    if [[ -z "$file" ]]; then
+        echo "Error: No .logline file specified"
+        usage
+        exit 1
+    fi
+    
+    check_runtime
+    
+    echo "Simulating execution of $file..."
+    
+    # Parse the .logline file to extract plan
+    local plan_yaml
+    plan_yaml=$(parse_logline "$file")
+    
+    # Convert YAML to JSON (simplified - assumes basic structure)
+    local plan_json
+    plan_json=$(echo "$plan_yaml" | python3 -c "
+import sys, yaml, json
+try:
+    data = yaml.safe_load(sys.stdin)
+    if 'plan' in data:
+        print(json.dumps(data['plan']))
+    else:
+        print('[]')
+except:
+    print('[]')
+" 2>/dev/null || echo '[]')
+    
+    # Preview contract
+    local response
+    response=$(curl -s -X POST "$RUNTIME_URL/contracts/preview" \
+        -H "Content-Type: application/json" \
+        -d "{\"plan\": $plan_json, \"risk\": \"medium\", \"est_cost\": 0.05, \"est_time_sec\": 30}")
+    
+    if [[ $? -eq 0 ]]; then
+        echo "Contract Preview:"
+        echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    contract = data.get('contract', {})
+    details = contract.get('details', {})
+    print(f\"Title: {contract.get('title', 'N/A')}\")
+    print(f\"Risk Level: {details.get('risk_level', 'N/A')}\")
+    print(f\"Estimated Cost: €{details.get('estimated_cost', 0)}\")
+    print(f\"Estimated Time: {details.get('estimated_time', 0)}s\")
+    print(f\"PII Handling: {details.get('pii_handling', False)}\")
+    print(f\"Contract ID: {contract.get('id', 'N/A')}\")
+except:
+    print('Error parsing response')
+"
+    else
+        echo "Error: Failed to preview contract"
+        exit 1
+    fi
+}
+
+approve_command() {
+    local contract_id="$1"
+    if [[ -z "$contract_id" ]]; then
+        echo "Error: No contract ID specified"
+        usage
+        exit 1
+    fi
+    
+    check_runtime
+    
+    echo "Approving contract $contract_id..."
+    
+    local response
+    response=$(curl -s -X POST "$RUNTIME_URL/contracts/approve" \
+        -H "Content-Type: application/json" \
+        -d "{\"contract_id\": \"$contract_id\", \"approved\": true}")
+    
+    if [[ $? -eq 0 ]]; then
+        echo "Contract approved successfully"
+        echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    contract = data.get('contract', {})
+    print(f\"Status: {contract.get('status', 'N/A')}\")
+    print(f\"Approved at: {contract.get('approved_at', 'N/A')}\")
+except:
+    print('Error parsing response')
+"
+    else
+        echo "Error: Failed to approve contract"
+        exit 1
+    fi
+}
+
+run_command() {
+    local file="$1"
+    if [[ -z "$file" ]]; then
+        echo "Error: No .logline file specified"
+        usage
+        exit 1
+    fi
+    
+    check_runtime
+    
+    echo "Executing $file..."
+    
+    # Parse the .logline file to extract plan
+    local plan_yaml
+    plan_yaml=$(parse_logline "$file")
+    
+    # Convert YAML to JSON
+    local plan_json
+    plan_json=$(echo "$plan_yaml" | python3 -c "
+import sys, yaml, json
+try:
+    data = yaml.safe_load(sys.stdin)
+    if 'plan' in data:
+        print(json.dumps(data['plan']))
+    else:
+        print('[]')
+except:
+    print('[]')
+" 2>/dev/null || echo '[]')
+    
+    # Create and execute run
+    local response
+    response=$(curl -s -X POST "$RUNTIME_URL/runs" \
+        -H "Content-Type: application/json" \
+        -d "{\"plan\": $plan_json, \"mode\": \"execute\"}")
+    
+    if [[ $? -eq 0 ]]; then
+        local run_id
+        run_id=$(echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('id', ''))
+except:
+    print('')
+")
+        
+        if [[ -n "$run_id" ]]; then
+            echo "Run created: $run_id"
+            echo "Monitoring execution..."
+            
+            # Poll for completion
+            for i in {1..30}; do
+                sleep 2
+                local status_response
+                status_response=$(curl -s "$RUNTIME_URL/runs/$run_id")
+                local status
+                status=$(echo "$status_response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('status', ''))
+except:
+    print('')
+")
+                
+                echo "Status: $status"
+                
+                if [[ "$status" == "completed" || "$status" == "failed" ]]; then
+                    echo "Execution finished with status: $status"
+                    trace_command "$run_id"
+                    break
+                fi
+            done
+        else
+            echo "Error: No run ID returned"
+        fi
+    else
+        echo "Error: Failed to create run"
+        exit 1
+    fi
+}
+
+trace_command() {
+    local run_id="$1"
+    if [[ -z "$run_id" ]]; then
+        echo "Error: No run ID specified"
+        usage
+        exit 1
+    fi
+    
+    check_runtime
+    
+    echo "Tracing run $run_id..."
+    
+    local response
+    response=$(curl -s "$RUNTIME_URL/runs/$run_id")
+    
+    if [[ $? -eq 0 ]]; then
+        echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(f\"Run ID: {data.get('id', 'N/A')}\")
+    print(f\"Status: {data.get('status', 'N/A')}\")
+    print(f\"Mode: {data.get('mode', 'N/A')}\")
+    print(f\"Created: {data.get('created', 'N/A')}\")
+    print(f\"Contract: {data.get('contract_id', 'None')}\")
+    print(f\"Spans: {len(data.get('spans', []))}\")
+    print()
+    print('Spans:')
+    for i, span in enumerate(data.get('spans', [])):
+        print(f\"  {i+1}. {span.get('type', 'N/A')} - {span.get('tool', 'N/A')} ({span.get('status', 'N/A')})\")
+        if span.get('out'):
+            print(f\"     Output: {str(span['out'])[:100]}...\")
+except Exception as e:
+    print(f'Error parsing response: {e}')
+"
+    else
+        echo "Error: Failed to get run details"
+        exit 1
+    fi
+}
+
+list_command() {
+    check_runtime
+    
+    echo "Recent runs:"
+    
+    local response
+    response=$(curl -s "$RUNTIME_URL/timeline?limit=10")
+    
+    if [[ $? -eq 0 ]]; then
+        echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    runs = data.get('runs', [])
+    if not runs:
+        print('No runs found')
+    else:
+        for run in runs[:10]:
+            print(f\"{run.get('id', 'N/A')[:8]} - {run.get('status', 'N/A')} - {run.get('created', 'N/A')}\")
+except:
+    print('Error parsing response')
+"
+    else
+        echo "Error: Failed to get timeline"
+        exit 1
+    fi
+}
+
+# Main command dispatch
+case "${1:-}" in
+    simulate)
+        simulate_command "$2"
+        ;;
+    approve)
+        approve_command "$2"
+        ;;
+    run)
+        run_command "$2"
+        ;;
+    trace)
+        trace_command "$2"
+        ;;
+    list)
+        list_command
+        ;;
+    ""|help|--help|-h)
+        usage
+        ;;
+    *)
+        echo "Error: Unknown command '$1'"
+        usage
+        exit 1
+        ;;
+esac

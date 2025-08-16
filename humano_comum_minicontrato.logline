@@ -1,0 +1,46 @@
+# Exemplo para Humano Comum - Minicontrato Simples com ROI
+# Cenário: Resumo automático de artigo com análise de custo/benefício
+
+- span:
+    type: exec.web
+    tool: web.fetch
+    args:
+      url: "https://techcrunch.com/2024/01/15/ai-automation-trends"
+      timeout: 30
+
+- span:
+    type: exec.web
+    tool: web.summarize
+    args:
+      text: "{{previous.body}}"
+      max_length: 200
+      include_key_points: true
+      language: "pt-br"
+
+- span:
+    type: approval.minicontrato
+    tool: minicontrato.create
+    args:
+      titulo: "Resumo de Artigo Técnico"
+      custo_estimado: 0.05
+      tempo_estimado: 15
+      roi_estimado: 2.5
+      beneficios:
+        - "Economia de 10 minutos de leitura"
+        - "Pontos-chave extraídos automaticamente"
+        - "Tradução para português"
+      riscos:
+        - "Possível perda de nuances do texto original"
+      pii_detectado: false
+      aprovacao_necessaria: false
+
+- span:
+    type: observe.evidence
+    tool: observe.evidence
+    args:
+      source: "web.summarize"
+      type: "content_summary"
+      metadata:
+        original_length: "{{web.fetch.body.length}}"
+        summary_length: "{{web.summarize.summary.length}}"
+        compression_ratio: "{{summary_length / original_length}}"

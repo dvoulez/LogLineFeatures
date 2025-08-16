@@ -1,0 +1,102 @@
+# Setor Pro: Validação de Compliance
+# Demonstra análise de conformidade com stop gate
+
+metadata:
+  name: "Validação de Compliance"
+  description: "Análise automatizada de conformidade regulatória"
+  category: "setor_pro"
+  estimated_cost: 0.25
+  estimated_time: 45
+  risk_level: "high"
+  requires_approval: true
+
+plan:
+  - span:
+      type: exec
+      tool: rag.query
+      args:
+        query: "regulamentações LGPD dados pessoais"
+        sources: ["compliance_db", "legal_docs"]
+        max_results: 10
+      meta:
+        description: "Consultar base de conhecimento regulatório"
+        cost: 0.05
+
+  - span:
+      type: exec
+      tool: computer.plan
+      args:
+        url: "https://sistema-interno.com/dados"
+        steps:
+          - type: "scan"
+            target: "forms"
+            check: "data_collection_consent"
+          - type: "verify"
+            target: "privacy_policy"
+            check: "lgpd_compliance"
+          - type: "audit"
+            target: "data_storage"
+            check: "encryption_standards"
+      meta:
+        description: "Planejar auditoria automatizada"
+        cost: 0.10
+
+  # STOP GATE: Aprovação obrigatória antes de executar auditoria
+  - span:
+      type: approval
+      tool: governance.request
+      args:
+        title: "Aprovação para Auditoria de Compliance"
+        description: "Executar verificação automatizada de conformidade LGPD"
+        risk_assessment:
+          data_access: "read_only"
+          systems_affected: ["sistema-interno.com"]
+          compliance_impact: "high"
+        approvers: ["compliance_officer", "legal_team"]
+        timeout: 3600  # 1 hora para aprovação
+      meta:
+        description: "Stop gate - aprovação obrigatória"
+        cost: 0.00
+
+  - span:
+      type: exec
+      tool: computer.execute
+      args:
+        plan: 'ref("computer.plan.steps")'
+        mode: "audit"
+        evidence_collection: true
+      condition: 'approved("governance.request")'
+      meta:
+        description: "Executar auditoria (apenas se aprovado)"
+        cost: 0.08
+
+  - span:
+      type: exec
+      tool: report.generate
+      args:
+        template: "compliance_audit"
+        data:
+          findings: 'ref("computer.execute.results")'
+          regulations: 'ref("rag.query.results")'
+          timestamp: 'now()'
+        format: "pdf"
+        classification: "confidential"
+      meta:
+        description: "Gerar relatório de compliance"
+        cost: 0.02
+
+contract:
+  benefits:
+    - "Auditoria automatizada de conformidade"
+    - "Relatório detalhado com evidências"
+    - "Redução de 80% no tempo de auditoria manual"
+  costs:
+    - "Processamento: $0.25"
+    - "Tempo: ~45 segundos + aprovação"
+  risks:
+    - "Acesso a sistemas internos sensíveis"
+    - "Possível exposição de dados durante auditoria"
+    - "Dependência de aprovação manual"
+  approval_required: true
+  stop_gates:
+    - "governance.request"

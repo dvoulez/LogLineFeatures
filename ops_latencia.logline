@@ -1,0 +1,7 @@
+# LogLine Plan: Ops Latência
+# Query logs and generate performance recommendations
+
+rag.query(query="latency performance issues last 24h", dataset="system_logs")
+observe.analyze(data=@prev.hits, metric="response_time", threshold=500)
+observe.recommendation(analysis=@prev.analysis, priority="high")
+ui.dashboard(metrics=@prev.recommendations, title="Performance Analysis")
